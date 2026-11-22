@@ -31,7 +31,7 @@ AC_DATA = {1: (550,  45,   25,  0,    1500, 1400,  15000,  300,  750, 1.0,     0
 #  Classes for airports, aircraft types and routes
 #=============================================================================================================================
 class Airport:
-    def _init_(self, code, lat, lon, runway, slots):
+    def __init__(self, code, lat, lon, runway, slots):
         self.code   = code
         self.lat    = lat
         self.lon    = lon
@@ -39,13 +39,13 @@ class Airport:
         self.slots  = slots          # weekly landing slots (None = unlimited, hub)
 
 class Aircraft:
-    def _init_(self, k, data):
+    def __init__(self, k, data):
         (self.speed, self.seats, self.TAT, self.charge, self.range, self.runway, self.lease,
          self.CX, self.CT, self.CF, self.battery, self.BT, self.electric) = data
         self.id = k
 
 class Route:
-    def _init_(self, nodes):
+    def __init__(self, nodes):
         self.nodes  = nodes                              # [H,i,H] or [H,i,j,H]
         self.legs   = list(zip(nodes[:-1], nodes[1:]))   # [(H,i),(i,H)] or [(H,i),(i,j),(j,H)]
         self.spokes = nodes[1:-1]                        # airports where the route lands (uses slots)
@@ -70,7 +70,7 @@ class Route:
 def distance(A, B):
     """Great-circle distance in km (Appendix C)."""
     p1, p2, l1, l2 = radians(A.lat), radians(B.lat), radians(A.lon), radians(B.lon)
-    return 6371 * 2 * asin(sqrt(sin((p1 - p2) / 2)*2 + cos(p1) * cos(p2) * sin((l1 - l2) / 2)*2))
+    return 6371 * 2 * asin(sqrt(sin((p1 - p2) / 2)**2 + cos(p1) * cos(p2) * sin((l1 - l2) / 2)**2))
 
 
 def read_data(file):
@@ -334,7 +334,7 @@ def plot_results(hub, Airports, Aircrafts, Routes, z):
         a, b = pair
         n, idx = len(types_on_link[pair]), sorted(types_on_link[pair]).index(k)
         dx, dy = X[b] - X[a], Yp[b] - Yp[a]
-        L = sqrt(dx*2 + dy*2)
+        L = sqrt(dx**2 + dy**2)
         off = (idx - (n - 1) / 2) * 0.25                       # small sideways offset if several types share a link
         ox, oy = -dy / L * off, dx / L * off
         ax.plot([X[a] + ox, X[b] + ox], [Yp[a] + oy, Yp[b] + oy], color=BLUES[freq_class(f)],
@@ -394,7 +394,7 @@ def plot_results(hub, Airports, Aircrafts, Routes, z):
 #=============================================================================================================================
 #  Run the program
 #=============================================================================================================================
-if _name_ == '_main_':
+if __name__ == '__main__':
     hub, Airports, q = read_data("DemandGroup17.xlsx")
     Aircrafts = {k: Aircraft(k, AC_DATA[k]) for k in AC_DATA}
 
