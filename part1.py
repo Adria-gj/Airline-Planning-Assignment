@@ -271,7 +271,7 @@ def print_model_result(model, hub, Aircrafts, Routes, z, AC, x, wi, wo, w, d):
 #  Run the program
 #=============================================================================================================================
 if __name__ == '__main__':
-    hub, Airports, q = read_data("DemandGroup17_1.xlsx")
+    hub, Airports, q = read_data("DemandGroup17.xlsx")
     Aircrafts = {k: Aircraft(k, AC_DATA[k]) for k in AC_DATA}
 
     d = {(i, j): distance(Airports[i], Airports[j]) for i in Airports for j in Airports if i != j}
