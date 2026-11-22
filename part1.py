@@ -31,7 +31,7 @@ AC_DATA = {1: (550,  45,   25,  0,    1500, 1400,  15000,  300,  750, 1.0,     0
 #  Classes for airports, aircraft types and routes
 #=============================================================================================================================
 class Airport:
-    def __init__(self, code, lat, lon, runway, slots):
+    def _init_(self, code, lat, lon, runway, slots):
         self.code   = code
         self.lat    = lat
         self.lon    = lon
@@ -39,13 +39,13 @@ class Airport:
         self.slots  = slots          # weekly landing slots (None = unlimited, hub)
 
 class Aircraft:
-    def __init__(self, k, data):
+    def _init_(self, k, data):
         (self.speed, self.seats, self.TAT, self.charge, self.range, self.runway, self.lease,
          self.CX, self.CT, self.CF, self.battery, self.BT, self.electric) = data
         self.id = k
 
 class Route:
-    def __init__(self, nodes):
+    def _init_(self, nodes):
         self.nodes  = nodes                              # [H,i,H] or [H,i,j,H]
         self.legs   = list(zip(nodes[:-1], nodes[1:]))   # [(H,i),(i,H)] or [(H,i),(i,j),(j,H)]
         self.spokes = nodes[1:-1]                        # airports where the route lands (uses slots)
@@ -70,7 +70,7 @@ class Route:
 def distance(A, B):
     """Great-circle distance in km (Appendix C)."""
     p1, p2, l1, l2 = radians(A.lat), radians(B.lat), radians(A.lon), radians(B.lon)
-    return 6371 * 2 * asin(sqrt(sin((p1 - p2) / 2)**2 + cos(p1) * cos(p2) * sin((l1 - l2) / 2)**2))
+    return 6371 * 2 * asin(sqrt(sin((p1 - p2) / 2)*2 + cos(p1) * cos(p2) * sin((l1 - l2) / 2)*2))
 
 
 def read_data(file):
@@ -171,8 +171,9 @@ def Network_Fleet_Problem(hub, Airports, Aircrafts, Routes, q, d, Y):
             z[r, k] = model.addVar(vtype=GRB.INTEGER, name=f'z({Routes[r].name()},{k})')
 
     for r in R:
-        for i in Routes[r].nodes:
-            for j in Routes[r].nodes:
+        stops = list(dict.fromkeys(Routes[r].nodes))       # unique airports of the route (hub only once)
+        for i in stops:
+            for j in stops:
                 if i != j and q[i, j] > 0 and Routes[r].legs_used(i, j):
                     x[i, j, r] = model.addVar(name=f'x({i},{j},{r})')
 
@@ -236,24 +237,37 @@ def Network_Fleet_Problem(hub, Airports, Aircrafts, Routes, q, d, Y):
     model.optimize()
 
     check_model_status(model)
-    print_model_result(model, hub, Aircrafts, Routes, z, AC, x, wi, wo, w, d)
+    print_model_result(model, hub, Airports, Aircrafts, Routes, z, AC, x, wi, wo, w, d, Y)
+    plot_results(hub, Airports, Aircrafts, Routes, z)
 
 
 #=============================================================================================================================
 #  Print results (Task 5)
 #=============================================================================================================================
-def print_model_result(model, hub, Aircrafts, Routes, z, AC, x, wi, wo, w, d):
-    print('\nWeekly profit = %.0f EUR' % model.ObjVal)
-    print('Passengers: direct %.0f, transfer %.0f' % (sum(v.X for v in x.values()), sum(v.X for v in w.values())))
+def print_model_result(model, hub, Airports, Aircrafts, Routes, z, AC, x, wi, wo, w, d, Y):
+    rev_direct   = sum(Y[i, j] * d[i, j] * x[i, j, r].X for (i, j, r) in x)
+    rev_transfer = sum(0.8 * Y[i, j] * d[i, j] * w[i, j].X for (i, j) in w)
+    op_costs     = sum(Routes[r].cost[k] * z[r, k].X for (r, k) in z)
+    leasing      = sum(Aircrafts[k].lease * round(AC[k].X) for k in Aircrafts)
+
+    print('\n================ RESULTS ================')
+    print('Weekly profit      = %10.0f EUR' % model.ObjVal)
+    print('  Revenue direct   = %10.0f EUR' % rev_direct)
+    print('  Revenue transfer = %10.0f EUR' % rev_transfer)
+    print('  Operating costs  = %10.0f EUR' % op_costs)
+    print('  Leasing costs    = %10.0f EUR' % leasing)
+    print('Passengers/week: direct %.0f, transfer %.0f' % (sum(v.X for v in x.values()), sum(v.X for v in w.values())))
 
     print('\nFleet:')
     for k, ac in Aircrafts.items():
         n = round(AC[k].X)
         if n > 0:
             used = sum(Routes[r].time[k] * z[r, k].X for (r, kk) in z if kk == k)
-            print(f'  AC{k}: {n} aircraft, utilisation {used / (ac.BT * DAYS * n) * 100:.1f}%')
+            print(f'  AC{k}: {n} aircraft, {used:.1f} of {ac.BT * DAYS * n} block hours used '
+                  f'-> utilisation {used / (ac.BT * DAYS * n) * 100:.1f}%')
 
     print('\nNetwork:')
+    RPK = ASK = 0
     for (r, k), var in z.items():
         if var.X > 0.5:
             route = Routes[r]
@@ -264,13 +278,123 @@ def print_model_result(model, hub, Aircrafts, Routes, z, AC, x, wi, wo, w, d):
                 pax += sum(wi[i, j, s].X for (i, j, s) in wi if s == r and l in route.legs_used(i, hub))
                 pax += sum(wo[i, j, s].X for (i, j, s) in wo if s == r and l in route.legs_used(hub, j))
                 lf.append(f'{a}-{b}: {pax / seats * 100:.0f}%')
+                share = Aircrafts[k].seats * var.X / seats             # share of this type if a route has >1 type
+                RPK += pax * share * d[a, b]
+                ASK += Aircrafts[k].seats * var.X * d[a, b]
             print(f'  {route.name():<24} AC{k}  {round(var.X):2d}/week   LF {", ".join(lf)}')
+    print(f'\nNetwork load factor (RPK/ASK) = {RPK / ASK * 100:.1f}%')
+
+    print('\nSlot usage (used/available):')
+    for s, A in Airports.items():
+        if s != hub:
+            used = sum(z[r, k].X for (r, k) in z if s in Routes[r].spokes)
+            print(f'  {s}: {used:.0f}/{A.slots}')
+
+
+#=============================================================================================================================
+#  Figures for the report (network map + slot usage)
+#=============================================================================================================================
+def plot_results(hub, Airports, Aircrafts, Routes, z):
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    COLORS = {1: '#2a78d6'}                                   # bar colour (slot chart)
+    INK, MUTED, TRACK = '#0b0b0b', '#898781', '#e1e0d9'
+    # frequency classes -> clearly different colours (+ slightly thicker lines for more flights)
+    BINS   = [(1, 1, '1 flight'), (2, 2, '2 flights'), (3, 4, '3-4 flights'), (5, 999, '5+ flights')]
+    BLUES  = ['#eda100', '#008300', '#2a78d6', '#e34948']   # yellow, green, blue, red
+    WIDTHS = [1.8, 2.5, 3.2, 3.9]
+    STYLES = {1: ':', 2: '-', 3: '--', 4: '-.', 5: (0, (1, 1))}     # line style = aircraft type
+
+    def freq_class(f):
+        for n, (lo, hi, _) in enumerate(BINS):
+            if lo <= f <= hi:
+                return n
+
+    # weekly one-way flights on every link (undirected) per aircraft type
+    links = {}
+    for (r, k), var in z.items():
+        f = round(var.X)
+        if f > 0:
+            for a, b in Routes[r].legs:
+                key = (tuple(sorted((a, b))), k)
+                links[key] = links.get(key, 0) + f
+
+    # ---------------- Figure 1: network map ----------------
+    c = cos(radians(Airports[hub].lat))                       # simple equirectangular projection around the hub
+    X = {a: A.lon * c for a, A in Airports.items()}
+    Yp = {a: A.lat for a, A in Airports.items()}
+    served = {a for (pair, k) in links for a in pair}
+
+    fig, ax = plt.subplots(figsize=(9.5, 7.5))
+    types_on_link = {}
+    for (pair, k) in links:
+        types_on_link.setdefault(pair, []).append(k)
+    for (pair, k), f in sorted(links.items(), key=lambda t: t[1]):      # busiest links drawn on top
+        a, b = pair
+        n, idx = len(types_on_link[pair]), sorted(types_on_link[pair]).index(k)
+        dx, dy = X[b] - X[a], Yp[b] - Yp[a]
+        L = sqrt(dx*2 + dy*2)
+        off = (idx - (n - 1) / 2) * 0.25                       # small sideways offset if several types share a link
+        ox, oy = -dy / L * off, dx / L * off
+        ax.plot([X[a] + ox, X[b] + ox], [Yp[a] + oy, Yp[b] + oy], color=BLUES[freq_class(f)],
+                lw=WIDTHS[freq_class(f)], ls=STYLES[k], solid_capstyle='round', zorder=1)
+
+    for a in Airports:
+        if a == hub:
+            ax.scatter(X[a], Yp[a], s=160, marker='s', color=INK, zorder=3)
+        elif a in served:
+            ax.scatter(X[a], Yp[a], s=45, color=INK, edgecolor='white', linewidth=1.5, zorder=3)
+        else:
+            ax.scatter(X[a], Yp[a], s=45, facecolor='white', edgecolor=MUTED, linewidth=1.2, zorder=3)
+        ax.annotate(a, (X[a], Yp[a]), xytext=(-14, -22) if a == hub else (5, 4), textcoords='offset points', fontsize=8,
+                    color=INK if (a in served or a == hub) else MUTED)
+
+    used_bins = sorted({freq_class(f) for f in links.values()})
+    handles  = [Line2D([], [], color=BLUES[n], lw=WIDTHS[n], label=f'{BINS[n][2]}/week') for n in used_bins]
+    handles += [Line2D([], [], color=INK, lw=1.8, ls=STYLES[k], label=f'AC{k}') for k in sorted({k for (_, k) in links})]
+    handles += [Line2D([], [], marker='o', ls='', markerfacecolor='white', markeredgecolor=MUTED, label='Not served')]
+    ax.legend(handles=handles, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8)
+    ax.set_title('Southern Star network (weekly one-way flights per link)', fontsize=11, color=INK, loc='left')
+    ax.set_aspect('equal')
+    ax.axis('off')
+    fig.tight_layout()
+    fig.savefig('network_map.png', dpi=300, bbox_inches='tight')
+
+    # ---------------- Figure 2: slot usage per spoke ----------------
+    spokes = sorted([a for a in Airports if a != hub], key=lambda a: Airports[a].slots)
+    used = {s: sum(var.X for (r, k), var in z.items() if s in Routes[r].spokes) for s in spokes}
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    yy = range(len(spokes))
+    ax.barh(yy, [Airports[s].slots for s in spokes], height=0.6, color=TRACK, label='Available')
+    ax.barh(yy, [used[s] for s in spokes], height=0.6, color=COLORS[1], label='Used')
+    for i, s in enumerate(spokes):
+        full = round(used[s]) >= Airports[s].slots
+        ax.text(Airports[s].slots + 0.2, i, f'{used[s]:.0f}/{Airports[s].slots}' + ('  full' if full else ''),
+                va='center', fontsize=8, color=INK if full else MUTED)
+    ax.set_yticks(list(yy))
+    ax.set_yticklabels(spokes, fontsize=8)
+    ax.set_xlabel('Weekly landing slots', fontsize=9, color=INK)
+    ax.set_title('Slot usage per spoke airport', fontsize=11, color=INK, loc='left')
+    ax.legend(frameon=False, fontsize=8, loc='lower right')
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+    ax.spines['left'].set_color('#c3c2b7')
+    ax.spines['bottom'].set_color('#c3c2b7')
+    ax.tick_params(colors=MUTED)
+    ax.grid(axis='x', color=TRACK, lw=0.5)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
+    fig.savefig('slot_usage.png', dpi=300, bbox_inches='tight')
+    plt.close('all')
+    print('\nFigures saved: network_map.png, slot_usage.png')
 
 
 #=============================================================================================================================
 #  Run the program
 #=============================================================================================================================
-if __name__ == '__main__':
+if _name_ == '_main_':
     hub, Airports, q = read_data("DemandGroup17.xlsx")
     Aircrafts = {k: Aircraft(k, AC_DATA[k]) for k in AC_DATA}
 
